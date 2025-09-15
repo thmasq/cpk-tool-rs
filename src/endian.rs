@@ -85,32 +85,78 @@ impl<R: Read> EndianReader<R> {
     }
 
     pub fn read_bytes(&mut self, count: usize) -> Result<Vec<u8>> {
+        println!("read_bytes: Attempting to read {} bytes", count);
         let mut buffer = vec![0u8; count];
-        self.reader.read_exact(&mut buffer)?;
-        Ok(buffer)
+
+        match self.reader.read_exact(&mut buffer) {
+            Ok(()) => {
+                println!("read_bytes: Successfully read {} bytes", count);
+                Ok(buffer)
+            }
+            Err(e) => {
+                println!("read_bytes: Failed to read {} bytes: {}", count, e);
+
+                // Try to read whatever we can to see how much is actually available
+                let mut partial_buffer = Vec::new();
+                match self.reader.read_to_end(&mut partial_buffer) {
+                    Ok(bytes_read) => {
+                        println!(
+                            "read_bytes: Only {} bytes were actually available",
+                            bytes_read
+                        );
+                    }
+                    Err(read_err) => {
+                        println!(
+                            "read_bytes: Could not even read remaining bytes: {}",
+                            read_err
+                        );
+                    }
+                }
+
+                Err(e.into())
+            }
+        }
     }
 
     pub fn read_cstring(&mut self, max_length: Option<usize>) -> Result<String> {
         let mut bytes = Vec::new();
         let max = max_length.unwrap_or(255);
 
-        for _ in 0..max {
-            let byte = self.read_u8()?;
-            if byte == 0 {
-                break;
+        println!("read_cstring: Starting, max_length: {}", max);
+
+        for i in 0..max {
+            match self.read_u8() {
+                Ok(byte) => {
+                    if byte == 0 {
+                        println!("read_cstring: Found null terminator at offset {}", i);
+                        break;
+                    }
+                    bytes.push(byte);
+                }
+                Err(e) => {
+                    println!("read_cstring: Hit EOF or error at offset {}: {}", i, e);
+                    if bytes.is_empty() {
+                        return Err(e);
+                    }
+                    // If we have some bytes, treat as unterminated string
+                    break;
+                }
             }
-            bytes.push(byte);
         }
 
         // Use Shift-JIS encoding like the original C# code
         let (decoded, _, _) = encoding_rs::SHIFT_JIS.decode(&bytes);
-        Ok(decoded.into_owned())
+        let result = decoded.into_owned();
+        println!("read_cstring: Read string: '{}'", result);
+        Ok(result)
     }
 }
 
 impl<R: Seek> EndianReader<R> {
     pub fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
-        Ok(self.reader.seek(pos)?)
+        let result = self.reader.seek(pos)?;
+        println!("seek: Moved to position {}", result);
+        Ok(result)
     }
 
     pub fn position(&mut self) -> Result<u64> {

@@ -87,23 +87,33 @@ impl Cpk {
     }
 
     pub fn read_cpk<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let file = File::open(path)?;
-        let mut reader = EndianReader::new(BufReader::new(file), true);
+        let file = File::open(&path)?;
+        let file_size = file.metadata()?.len();
+        let mut reader = EndianReader::new(BufReader::new(file), false); // Start with big endian
+
+        println!("File size: {} bytes", file_size);
 
         // Check CPK signature
         let signature = reader.read_bytes(4)?;
+        println!(
+            "Signature: {:?}",
+            std::str::from_utf8(&signature).unwrap_or("invalid")
+        );
         if &signature != b"CPK " {
             return Err(CpkError::InvalidSignature);
         }
 
         // Read UTF data
-        let (utf_data, is_encrypted) = self.read_utf_data(&mut reader)?;
+        let current_pos = reader.position()?;
+        println!("Position before reading UTF data: {}", current_pos);
+
+        let (utf_data, is_encrypted) = self.read_utf_data(&mut reader, file_size)?;
         self.cpk_packet = utf_data.clone();
 
         // Add CPK header entry
         let cpk_entry = FileEntry {
             file_name: "CPK_HDR".to_string(),
-            file_offset: reader.position()? + 0x10,
+            file_offset: current_pos + 16, // After signature + header
             file_size: self.cpk_packet.len() as u64,
             encrypted: is_encrypted,
             file_type: "CPK".to_string(),
@@ -148,6 +158,12 @@ impl Cpk {
             .as_u64()
             .unwrap_or(0);
 
+        println!("TOC offset: 0x{:X}", self.toc_offset);
+        println!("ETOC offset: 0x{:X}", self.etoc_offset);
+        println!("ITOC offset: 0x{:X}", self.itoc_offset);
+        println!("GTOC offset: 0x{:X}", self.gtoc_offset);
+        println!("Content offset: 0x{:X}", self.content_offset);
+
         // Add content offset entry
         if self.content_offset != 0 {
             let content_entry = FileEntry {
@@ -169,6 +185,9 @@ impl Cpk {
             .as_u16()
             .unwrap_or(0x800);
 
+        println!("Files: {}", files);
+        println!("Align: 0x{:X}", align);
+
         // Read TOC if present
         if self.toc_offset != 0xFFFFFFFFFFFFFFFF {
             let toc_entry = FileEntry {
@@ -179,7 +198,7 @@ impl Cpk {
                 ..FileEntry::new()
             };
             self.file_table.push(toc_entry);
-            self.read_toc(&mut reader)?;
+            self.read_toc(&mut reader, file_size)?;
         }
 
         // Read ETOC if present
@@ -192,7 +211,7 @@ impl Cpk {
                 ..FileEntry::new()
             };
             self.file_table.push(etoc_entry);
-            self.read_etoc(&mut reader)?;
+            self.read_etoc(&mut reader, file_size)?;
         }
 
         // Read ITOC if present
@@ -205,7 +224,7 @@ impl Cpk {
                 ..FileEntry::new()
             };
             self.file_table.push(itoc_entry);
-            self.read_itoc(&mut reader, align)?;
+            self.read_itoc(&mut reader, align, file_size)?;
         }
 
         // Read GTOC if present
@@ -218,7 +237,7 @@ impl Cpk {
                 ..FileEntry::new()
             };
             self.file_table.push(gtoc_entry);
-            self.read_gtoc(&mut reader)?;
+            self.read_gtoc(&mut reader, file_size)?;
         }
 
         Ok(())
@@ -227,12 +246,68 @@ impl Cpk {
     fn read_utf_data<R: Read + Seek>(
         &self,
         reader: &mut EndianReader<R>,
+        file_size: u64,
     ) -> Result<(Vec<u8>, bool)> {
-        reader.set_endian(true); // Little endian
+        let pos_before_header = reader.position()?;
+        reader.set_endian(true); // Little endian for header
 
         let _unk1 = reader.read_i32()?;
+        let pos_after_unk1 = reader.position()?;
+
         let utf_size = reader.read_i64()?;
-        let mut utf_packet = reader.read_bytes(utf_size as usize)?;
+        let current_pos = reader.position()?;
+
+        println!("Position before UTF header: {}", pos_before_header);
+        println!("Position after unk1: {}", pos_after_unk1);
+        println!("UTF size: {} bytes", utf_size);
+        println!("Current position: {}", current_pos);
+        println!("Remaining bytes in file: {}", file_size - current_pos);
+
+        // Validate UTF size
+        if utf_size < 0 {
+            return Err(CpkError::InvalidFormat("Negative UTF size".to_string()));
+        }
+
+        let utf_size = utf_size as u64;
+        if current_pos + utf_size > file_size {
+            return Err(CpkError::InvalidFormat(format!(
+                "UTF size ({}) exceeds remaining file size ({})",
+                utf_size,
+                file_size - current_pos
+            )));
+        }
+
+        if utf_size > 100_000_000 {
+            return Err(CpkError::InvalidFormat(format!(
+                "UTF size ({}) seems unreasonably large",
+                utf_size
+            )));
+        }
+
+        println!("About to read {} bytes of UTF data", utf_size);
+        let pos_before_read = reader.position()?;
+        println!("Position before reading UTF data: {}", pos_before_read);
+
+        // Try to read the data
+        let mut utf_packet = match reader.read_bytes(utf_size as usize) {
+            Ok(data) => {
+                println!("Successfully read {} bytes of UTF data", data.len());
+                data
+            }
+            Err(e) => {
+                println!("Failed to read UTF data: {}", e);
+                println!(
+                    "Tried to read {} bytes from position {}",
+                    utf_size, pos_before_read
+                );
+                println!(
+                    "File size: {}, bytes remaining: {}",
+                    file_size,
+                    file_size - pos_before_read
+                );
+                return Err(e);
+            }
+        };
 
         reader.set_endian(false); // Back to big endian
 
@@ -244,7 +319,17 @@ impl Cpk {
             && utf_packet[3] == 0x46); // @UTF
 
         if is_encrypted {
+            println!("UTF data is encrypted, decrypting...");
             utf_packet = self.decrypt_utf(&utf_packet);
+        } else {
+            println!("UTF data is not encrypted");
+        }
+
+        // Verify the decrypted data starts with @UTF
+        if utf_packet.len() < 4 || &utf_packet[0..4] != b"@UTF" {
+            return Err(CpkError::InvalidFormat(
+                "Invalid UTF signature after decryption".to_string(),
+            ));
         }
 
         Ok((utf_packet, is_encrypted))
@@ -263,7 +348,11 @@ impl Cpk {
         result
     }
 
-    fn read_toc<R: Read + Seek>(&mut self, reader: &mut EndianReader<R>) -> Result<()> {
+    fn read_toc<R: Read + Seek>(
+        &mut self,
+        reader: &mut EndianReader<R>,
+        file_size: u64,
+    ) -> Result<()> {
         let add_offset = if self.content_offset == 0 {
             self.toc_offset
         } else if self.toc_offset == 0 {
@@ -281,7 +370,7 @@ impl Cpk {
             return Err(CpkError::InvalidFormat("Invalid TOC signature".to_string()));
         }
 
-        let (utf_data, is_encrypted) = self.read_utf_data(reader)?;
+        let (utf_data, is_encrypted) = self.read_utf_data(reader, file_size)?;
         self.toc_packet = Some(utf_data.clone());
 
         // Update TOC header entry
@@ -345,7 +434,11 @@ impl Cpk {
         Ok(())
     }
 
-    fn read_etoc<R: Read + Seek>(&mut self, reader: &mut EndianReader<R>) -> Result<()> {
+    fn read_etoc<R: Read + Seek>(
+        &mut self,
+        reader: &mut EndianReader<R>,
+        file_size: u64,
+    ) -> Result<()> {
         reader.seek(SeekFrom::Start(self.etoc_offset))?;
 
         let signature = reader.read_bytes(4)?;
@@ -355,7 +448,7 @@ impl Cpk {
             ));
         }
 
-        let (utf_data, is_encrypted) = self.read_utf_data(reader)?;
+        let (utf_data, is_encrypted) = self.read_utf_data(reader, file_size)?;
         self.etoc_packet = Some(utf_data.clone());
 
         // Update ETOC header entry
@@ -393,6 +486,7 @@ impl Cpk {
         &mut self,
         reader: &mut EndianReader<R>,
         align: u16,
+        file_size: u64,
     ) -> Result<()> {
         reader.seek(SeekFrom::Start(self.itoc_offset))?;
 
@@ -403,7 +497,7 @@ impl Cpk {
             ));
         }
 
-        let (utf_data, is_encrypted) = self.read_utf_data(reader)?;
+        let (utf_data, is_encrypted) = self.read_utf_data(reader, file_size)?;
         self.itoc_packet = Some(utf_data.clone());
 
         // Update ITOC header entry
@@ -513,7 +607,11 @@ impl Cpk {
         Ok(())
     }
 
-    fn read_gtoc<R: Read + Seek>(&mut self, reader: &mut EndianReader<R>) -> Result<()> {
+    fn read_gtoc<R: Read + Seek>(
+        &mut self,
+        reader: &mut EndianReader<R>,
+        _file_size: u64,
+    ) -> Result<()> {
         reader.seek(SeekFrom::Start(self.gtoc_offset))?;
 
         let signature = reader.read_bytes(4)?;
