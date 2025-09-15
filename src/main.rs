@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use log::info;
 use std::path::PathBuf;
 
 mod compression;
@@ -46,6 +47,8 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
+
     println!("CriPakTools (Rust Edition)\n");
 
     let cli = Cli::parse();
@@ -71,10 +74,10 @@ fn main() -> Result<()> {
             cpk.read_cpk(input)?;
 
             if target.to_lowercase() == "all" {
-                println!("Extracting all files...");
+                info!("Extracting all files...");
                 cpk.extract_all(input)?;
             } else {
-                println!("Extracting: {}", target);
+                info!("Extracting: {}", target);
                 cpk.extract_file(input, target)?;
             }
         }
@@ -89,7 +92,7 @@ fn main() -> Result<()> {
             cpk.read_cpk(input)?;
 
             let output_path = output.as_ref().unwrap_or(input);
-            println!(
+            info!(
                 "Replacing {} with {} in {}",
                 target,
                 replacement.display(),

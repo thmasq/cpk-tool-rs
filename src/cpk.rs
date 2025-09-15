@@ -2,6 +2,7 @@ use crate::compression::decompress_crilayla;
 use crate::endian::EndianReader;
 use crate::error::{CpkError, Result};
 use crate::utf::{CellValue, Utf};
+use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -49,6 +50,7 @@ impl FileEntry {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Cpk {
     pub file_table: Vec<FileEntry>,
     pub cpk_data: HashMap<String, CellValue>,
@@ -91,11 +93,11 @@ impl Cpk {
         let file_size = file.metadata()?.len();
         let mut reader = EndianReader::new(BufReader::new(file), false); // Start with big endian
 
-        println!("File size: {} bytes", file_size);
+        info!("File size: {} bytes", file_size);
 
         // Check CPK signature
         let signature = reader.read_bytes(4)?;
-        println!(
+        debug!(
             "Signature: {:?}",
             std::str::from_utf8(&signature).unwrap_or("invalid")
         );
@@ -105,7 +107,7 @@ impl Cpk {
 
         // Read UTF data
         let current_pos = reader.position()?;
-        println!("Position before reading UTF data: {}", current_pos);
+        debug!("Position before reading UTF data: {}", current_pos);
 
         let (utf_data, is_encrypted) = self.read_utf_data(&mut reader, file_size)?;
         self.cpk_packet = utf_data.clone();
@@ -158,11 +160,11 @@ impl Cpk {
             .as_u64()
             .unwrap_or(0);
 
-        println!("TOC offset: 0x{:X}", self.toc_offset);
-        println!("ETOC offset: 0x{:X}", self.etoc_offset);
-        println!("ITOC offset: 0x{:X}", self.itoc_offset);
-        println!("GTOC offset: 0x{:X}", self.gtoc_offset);
-        println!("Content offset: 0x{:X}", self.content_offset);
+        debug!("TOC offset: 0x{:X}", self.toc_offset);
+        debug!("ETOC offset: 0x{:X}", self.etoc_offset);
+        debug!("ITOC offset: 0x{:X}", self.itoc_offset);
+        debug!("GTOC offset: 0x{:X}", self.gtoc_offset);
+        debug!("Content offset: 0x{:X}", self.content_offset);
 
         // Add content offset entry
         if self.content_offset != 0 {
@@ -185,8 +187,8 @@ impl Cpk {
             .as_u16()
             .unwrap_or(0x800);
 
-        println!("Files: {}", files);
-        println!("Align: 0x{:X}", align);
+        debug!("Files: {}", files);
+        debug!("Align: 0x{:X}", align);
 
         // Read TOC if present
         if self.toc_offset != 0xFFFFFFFFFFFFFFFF {
@@ -257,11 +259,11 @@ impl Cpk {
         let utf_size = reader.read_i64()?;
         let current_pos = reader.position()?;
 
-        println!("Position before UTF header: {}", pos_before_header);
-        println!("Position after unk1: {}", pos_after_unk1);
-        println!("UTF size: {} bytes", utf_size);
-        println!("Current position: {}", current_pos);
-        println!("Remaining bytes in file: {}", file_size - current_pos);
+        debug!("Position before UTF header: {}", pos_before_header);
+        debug!("Position after unk1: {}", pos_after_unk1);
+        debug!("UTF size: {} bytes", utf_size);
+        debug!("Current position: {}", current_pos);
+        debug!("Remaining bytes in file: {}", file_size - current_pos);
 
         // Validate UTF size
         if utf_size < 0 {
@@ -284,23 +286,23 @@ impl Cpk {
             )));
         }
 
-        println!("About to read {} bytes of UTF data", utf_size);
+        debug!("About to read {} bytes of UTF data", utf_size);
         let pos_before_read = reader.position()?;
-        println!("Position before reading UTF data: {}", pos_before_read);
+        debug!("Position before reading UTF data: {}", pos_before_read);
 
         // Try to read the data
         let mut utf_packet = match reader.read_bytes(utf_size as usize) {
             Ok(data) => {
-                println!("Successfully read {} bytes of UTF data", data.len());
+                debug!("Successfully read {} bytes of UTF data", data.len());
                 data
             }
             Err(e) => {
-                println!("Failed to read UTF data: {}", e);
-                println!(
+                warn!("Failed to read UTF data: {}", e);
+                debug!(
                     "Tried to read {} bytes from position {}",
                     utf_size, pos_before_read
                 );
-                println!(
+                debug!(
                     "File size: {}, bytes remaining: {}",
                     file_size,
                     file_size - pos_before_read
@@ -319,10 +321,10 @@ impl Cpk {
             && utf_packet[3] == 0x46); // @UTF
 
         if is_encrypted {
-            println!("UTF data is encrypted, decrypting...");
+            debug!("UTF data is encrypted, decrypting...");
             utf_packet = self.decrypt_utf(&utf_packet);
         } else {
-            println!("UTF data is not encrypted");
+            debug!("UTF data is not encrypted");
         }
 
         // Verify the decrypted data starts with @UTF
@@ -677,11 +679,11 @@ impl Cpk {
             reader.read_exact(&mut data)?;
 
             if &header == b"CRILAYLA" {
-                let extract_size = entry.extract_size.unwrap_or(entry.file_size) as usize;
+                let _extract_size = entry.extract_size.unwrap_or(entry.file_size) as usize;
                 data = decompress_crilayla(&data)?;
             }
 
-            println!("Extracting: {}", output_path);
+            info!("Extracting: {}", output_path);
             std::fs::write(&output_path, &data)?;
         }
 
@@ -716,11 +718,11 @@ impl Cpk {
             reader.read_exact(&mut data)?;
 
             if &header == b"CRILAYLA" {
-                let extract_size = entry.extract_size.unwrap_or(entry.file_size) as usize;
+                let _extract_size = entry.extract_size.unwrap_or(entry.file_size) as usize;
                 data = decompress_crilayla(&data)?;
             }
 
-            println!("Extracting: {}", output_path);
+            info!("Extracting: {}", output_path);
             std::fs::write(&output_path, &data)?;
         }
 
@@ -729,10 +731,10 @@ impl Cpk {
 
     pub fn replace_file<P: AsRef<Path>>(
         &mut self,
-        cpk_path: P,
-        target: &str,
-        replacement_path: P,
-        output_path: P,
+        _cpk_path: P,
+        _target: &str,
+        _replacement_path: P,
+        _output_path: P,
     ) -> Result<()> {
         // This is a simplified implementation
         // A full implementation would need to handle UTF table updates

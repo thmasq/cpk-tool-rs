@@ -1,5 +1,6 @@
 use crate::endian::EndianReader;
 use crate::error::{CpkError, Result};
+use log::{debug, warn};
 use std::io::{Cursor, SeekFrom};
 
 #[derive(Debug, Clone)]
@@ -134,27 +135,27 @@ impl Utf {
     }
 
     pub fn read_utf(&mut self, data: &[u8]) -> Result<()> {
-        println!(
+        debug!(
             "UTF: Starting to read UTF data, buffer size: {}",
             data.len()
         );
         let mut reader = EndianReader::new(Cursor::new(data), false); // Big endian
         let offset = reader.position()?;
-        println!("UTF: Initial offset: {}", offset);
+        debug!("UTF: Initial offset: {}", offset);
 
         // Check signature
         let signature = reader.read_bytes(4)?;
         if &signature != b"@UTF" {
             return Err(CpkError::InvalidUtfSignature);
         }
-        println!("UTF: Valid @UTF signature found");
+        debug!("UTF: Valid @UTF signature found");
 
         self.table_size = reader.read_u32()?;
         self.rows_offset = reader.read_u32()? as u64;
         self.strings_offset = reader.read_u32()? as u64;
         self.data_offset = reader.read_u32()? as u64;
 
-        println!(
+        debug!(
             "UTF: Raw offsets - rows: {}, strings: {}, data: {}",
             self.rows_offset, self.strings_offset, self.data_offset
         );
@@ -164,7 +165,7 @@ impl Utf {
         self.strings_offset += offset + 8;
         self.data_offset += offset + 8;
 
-        println!(
+        debug!(
             "UTF: Adjusted offsets - rows: {}, strings: {}, data: {}",
             self.rows_offset, self.strings_offset, self.data_offset
         );
@@ -174,7 +175,7 @@ impl Utf {
         self.row_length = reader.read_u16()?;
         self.num_rows = reader.read_u32()?;
 
-        println!(
+        debug!(
             "UTF: Table info - columns: {}, row_length: {}, rows: {}",
             self.num_columns, self.row_length, self.num_rows
         );
@@ -205,7 +206,7 @@ impl Utf {
         // Read columns
         self.columns.clear();
         for i in 0..self.num_columns {
-            println!("UTF: Reading column {}", i);
+            debug!("UTF: Reading column {}", i);
             let flags = reader.read_u8()?;
             let flags = if flags == 0 {
                 reader.seek(SeekFrom::Current(3))?;
@@ -215,11 +216,11 @@ impl Utf {
             };
 
             let name_offset = reader.read_u32()?;
-            println!("UTF: Column {} name offset: {}", i, name_offset);
+            debug!("UTF: Column {} name offset: {}", i, name_offset);
 
             // Safe string reading with bounds checking
             let name = if self.strings_offset + name_offset as u64 >= data.len() as u64 {
-                println!(
+                warn!(
                     "UTF: Column {} name offset {} is beyond buffer, using default name",
                     i, name_offset
                 );
@@ -228,20 +229,20 @@ impl Utf {
                 match self.read_string_at(&mut reader, name_offset as u64) {
                     Ok(s) if !s.is_empty() => s,
                     _ => {
-                        println!("UTF: Failed to read column {} name, using default", i);
+                        warn!("UTF: Failed to read column {} name, using default", i);
                         format!("Column{}", i)
                     }
                 }
             };
 
-            println!("UTF: Column {} name: '{}'", i, name);
+            debug!("UTF: Column {} name: '{}'", i, name);
             self.columns.push(Column { flags, name });
         }
 
         // Read rows
         self.rows.clear();
         for row_idx in 0..self.num_rows {
-            println!("UTF: Reading row {}", row_idx);
+            debug!("UTF: Reading row {}", row_idx);
             reader.seek(SeekFrom::Start(
                 self.rows_offset + (row_idx as u64 * self.row_length as u64),
             ))?;
@@ -251,7 +252,7 @@ impl Utf {
             for col_idx in 0..self.num_columns {
                 let column = &self.columns[col_idx as usize];
                 let storage_flag = column.flags & 0xF0;
-                println!(
+                debug!(
                     "UTF: Row {}, Column {} ({}), storage_flag: 0x{:02X}",
                     row_idx, col_idx, column.name, storage_flag
                 );
@@ -268,7 +269,7 @@ impl Utf {
                         // STORAGE_PERROW
                         let column_type = column.flags & 0x0F;
                         let position = reader.position()?;
-                        println!(
+                        debug!(
                             "UTF: Reading PERROW data, type: 0x{:02X}, position: {}",
                             column_type, position
                         );
@@ -281,16 +282,16 @@ impl Utf {
                             0x08 => CellValue::Float(reader.read_f32()?),
                             0x0A => {
                                 let str_offset = reader.read_u32()?;
-                                println!("UTF: String offset: {}", str_offset);
+                                debug!("UTF: String offset: {}", str_offset);
                                 let string_value =
                                     self.read_string_at(&mut reader, str_offset as u64)?;
-                                println!("UTF: String value: '{}'", string_value);
+                                debug!("UTF: String value: '{}'", string_value);
                                 CellValue::String(string_value)
                             }
                             0x0B => {
                                 let data_offset = reader.read_u32()?;
                                 let data_size = reader.read_u32()?;
-                                println!("UTF: Data offset: {}, size: {}", data_offset, data_size);
+                                debug!("UTF: Data offset: {}, size: {}", data_offset, data_size);
                                 let data_value = self.read_data_at(
                                     &mut reader,
                                     data_offset as u64,
@@ -322,7 +323,7 @@ impl Utf {
             self.rows.push(row);
         }
 
-        println!("UTF: Successfully parsed UTF data");
+        debug!("UTF: Successfully parsed UTF data");
         Ok(())
     }
 
@@ -333,7 +334,7 @@ impl Utf {
     ) -> Result<String> {
         let current_pos = reader.position()?;
         let target_pos = self.strings_offset + offset;
-        println!(
+        debug!(
             "UTF: read_string_at offset {}, target position: {}, current: {}",
             offset, target_pos, current_pos
         );
@@ -352,7 +353,7 @@ impl Utf {
     ) -> Result<Vec<u8>> {
         let current_pos = reader.position()?;
         let target_pos = self.data_offset + offset;
-        println!(
+        debug!(
             "UTF: read_data_at offset {}, size {}, target position: {}, current: {}",
             offset, size, target_pos, current_pos
         );
