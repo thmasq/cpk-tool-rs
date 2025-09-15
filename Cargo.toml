@@ -1,0 +1,19 @@
+[package]
+name = "cpk-tool-rs"
+version = "0.1.0"
+edition = "2024"
+authors = ["Thomas Q <thomasqsa@gmail.com>"]
+description = "Tool to extract/update contents of CRIWARE's CPK archive format"
+license = "GPL v3"
+
+[[bin]]
+name = "cpk-tools"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.99"
+byteorder = "1.5.0"
+clap = { version = "4.5.47", features = ["derive"] }
+encoding_rs = "0.8.35"
+flate2 = "1.1.2"
+thiserror = "2.0.16"
