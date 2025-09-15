@@ -355,14 +355,20 @@ impl Cpk {
         reader: &mut EndianReader<R>,
         file_size: u64,
     ) -> Result<()> {
-        let add_offset = if self.content_offset == 0 {
-            self.toc_offset
-        } else if self.toc_offset == 0 {
-            self.content_offset
-        } else if self.content_offset < self.toc_offset {
-            self.content_offset
+        let f_toc_offset = if self.toc_offset > 0x800 {
+            0x800
         } else {
             self.toc_offset
+        };
+
+        let add_offset = if self.content_offset == 0xFFFFFFFFFFFFFFFF {
+            f_toc_offset
+        } else if self.toc_offset == 0xFFFFFFFFFFFFFFFF {
+            self.content_offset
+        } else if self.content_offset < f_toc_offset {
+            self.content_offset
+        } else {
+            f_toc_offset
         };
 
         reader.seek(SeekFrom::Start(self.toc_offset))?;
@@ -660,31 +666,7 @@ impl Cpk {
         let mut reader = BufReader::new(file);
 
         for entry in entries {
-            let output_path = match (&entry.dir_name, &entry.file_name) {
-                (Some(dir), file_name) => {
-                    create_dir_all(dir)?;
-                    format!("{}/{}", dir, file_name)
-                }
-                (None, file_name) => file_name.clone(),
-            };
-
-            reader.seek(SeekFrom::Start(entry.file_offset))?;
-
-            // Check for compression
-            let mut header = [0u8; 8];
-            reader.read_exact(&mut header)?;
-            reader.seek(SeekFrom::Start(entry.file_offset))?;
-
-            let mut data = vec![0u8; entry.file_size as usize];
-            reader.read_exact(&mut data)?;
-
-            if &header == b"CRILAYLA" {
-                let _extract_size = entry.extract_size.unwrap_or(entry.file_size) as usize;
-                data = decompress_crilayla(&data)?;
-            }
-
-            info!("Extracting: {}", output_path);
-            std::fs::write(&output_path, &data)?;
+            self.extract_single_file(&mut reader, entry)?;
         }
 
         Ok(())
@@ -698,37 +680,49 @@ impl Cpk {
             if entry.file_type != "FILE" {
                 continue;
             }
-
-            let output_path = match (&entry.dir_name, &entry.file_name) {
-                (Some(dir), file_name) => {
-                    create_dir_all(dir)?;
-                    format!("{}/{}", dir, file_name)
-                }
-                (None, file_name) => file_name.clone(),
-            };
-
-            reader.seek(SeekFrom::Start(entry.file_offset))?;
-
-            // Check for compression
-            let mut header = [0u8; 8];
-            reader.read_exact(&mut header)?;
-            reader.seek(SeekFrom::Start(entry.file_offset))?;
-
-            let mut data = vec![0u8; entry.file_size as usize];
-            reader.read_exact(&mut data)?;
-
-            if &header == b"CRILAYLA" {
-                let _extract_size = entry.extract_size.unwrap_or(entry.file_size) as usize;
-                data = decompress_crilayla(&data)?;
-            }
-
-            info!("Extracting: {}", output_path);
-            std::fs::write(&output_path, &data)?;
+            self.extract_single_file(&mut reader, entry)?;
         }
 
         Ok(())
     }
 
+    fn extract_single_file<R: Read + Seek>(&self, reader: &mut R, entry: &FileEntry) -> Result<()> {
+        let output_path = match (&entry.dir_name, &entry.file_name) {
+            (Some(dir), file_name) => {
+                create_dir_all(dir)?;
+                format!("{}/{}", dir, file_name)
+            }
+            (None, file_name) => file_name.clone(),
+        };
+
+        // Seek to file position
+        reader.seek(SeekFrom::Start(entry.file_offset))?;
+
+        // Check for compression by reading header first
+        let mut header = [0u8; 8];
+        if let Err(_) = reader.read_exact(&mut header) {
+            // If we can't read 8 bytes, the file might be smaller
+            reader.seek(SeekFrom::Start(entry.file_offset))?;
+        } else {
+            // Seek back to beginning of file
+            reader.seek(SeekFrom::Start(entry.file_offset))?;
+        }
+
+        // Read the full file data
+        let mut data = vec![0u8; entry.file_size as usize];
+        reader.read_exact(&mut data)?;
+
+        // Check if file is compressed and decompress if needed
+        if data.len() >= 8 && &data[0..8] == b"CRILAYLA" {
+            info!("Decompressing CRILAYLA file: {}", output_path);
+            data = decompress_crilayla(&data)?;
+        }
+
+        info!("Extracting: {}", output_path);
+        std::fs::write(&output_path, &data)?;
+
+        Ok(())
+    }
     pub fn replace_file<P: AsRef<Path>>(
         &mut self,
         _cpk_path: P,
