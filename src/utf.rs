@@ -56,27 +56,55 @@ impl CellValue {
     pub fn as_u8(&self) -> Option<u8> {
         match self {
             CellValue::UInt8(v) => Some(*v),
+            CellValue::Int8(v) if *v >= 0 => Some(*v as u8),
+            CellValue::UInt16(v) if *v <= u8::MAX as u16 => Some(*v as u8),
+            CellValue::Int16(v) if *v >= 0 && *v <= u8::MAX as i16 => Some(*v as u8),
+            CellValue::UInt32(v) if *v <= u8::MAX as u32 => Some(*v as u8),
+            CellValue::Int32(v) if *v >= 0 && *v <= u8::MAX as i32 => Some(*v as u8),
+            CellValue::UInt64(v) if *v <= u8::MAX as u64 => Some(*v as u8),
+            CellValue::Int64(v) if *v >= 0 && *v <= u8::MAX as i64 => Some(*v as u8),
             _ => None,
         }
     }
 
     pub fn as_u16(&self) -> Option<u16> {
         match self {
+            CellValue::UInt8(v) => Some(*v as u16),
+            CellValue::Int8(v) if *v >= 0 => Some(*v as u16),
             CellValue::UInt16(v) => Some(*v),
+            CellValue::Int16(v) if *v >= 0 => Some(*v as u16),
+            CellValue::UInt32(v) if *v <= u16::MAX as u32 => Some(*v as u16),
+            CellValue::Int32(v) if *v >= 0 && *v <= u16::MAX as i32 => Some(*v as u16),
+            CellValue::UInt64(v) if *v <= u16::MAX as u64 => Some(*v as u16),
+            CellValue::Int64(v) if *v >= 0 && *v <= u16::MAX as i64 => Some(*v as u16),
             _ => None,
         }
     }
 
     pub fn as_u32(&self) -> Option<u32> {
         match self {
+            CellValue::UInt8(v) => Some(*v as u32),
+            CellValue::Int8(v) if *v >= 0 => Some(*v as u32),
+            CellValue::UInt16(v) => Some(*v as u32),
+            CellValue::Int16(v) if *v >= 0 => Some(*v as u32),
             CellValue::UInt32(v) => Some(*v),
+            CellValue::Int32(v) if *v >= 0 => Some(*v as u32),
+            CellValue::UInt64(v) if *v <= u32::MAX as u64 => Some(*v as u32),
+            CellValue::Int64(v) if *v >= 0 && *v <= u32::MAX as i64 => Some(*v as u32),
             _ => None,
         }
     }
 
     pub fn as_u64(&self) -> Option<u64> {
         match self {
+            CellValue::UInt8(v) => Some(*v as u64),
+            CellValue::Int8(v) if *v >= 0 => Some(*v as u64),
+            CellValue::UInt16(v) => Some(*v as u64),
+            CellValue::Int16(v) if *v >= 0 => Some(*v as u64),
+            CellValue::UInt32(v) => Some(*v as u64),
+            CellValue::Int32(v) if *v >= 0 => Some(*v as u64),
             CellValue::UInt64(v) => Some(*v),
+            CellValue::Int64(v) if *v >= 0 => Some(*v as u64),
             _ => None,
         }
     }
@@ -235,7 +263,7 @@ impl Utf {
                 }
             };
 
-            debug!("UTF: Column {} name: '{}'", i, name);
+            debug!("UTF: Column {} name: '{}', flags: 0x{:02X}", i, name, flags);
             self.columns.push(Column { flags, name });
         }
 
@@ -275,11 +303,51 @@ impl Utf {
                         );
 
                         let value = match column_type {
-                            0x00 | 0x01 => CellValue::UInt8(reader.read_u8()?),
-                            0x02 | 0x03 => CellValue::UInt16(reader.read_u16()?),
-                            0x04 | 0x05 => CellValue::UInt32(reader.read_u32()?),
-                            0x06 | 0x07 => CellValue::UInt64(reader.read_u64()?),
-                            0x08 => CellValue::Float(reader.read_f32()?),
+                            0x00 => {
+                                let val = reader.read_u8()?;
+                                debug!("UTF: Read UInt8: {}", val);
+                                CellValue::UInt8(val)
+                            }
+                            0x01 => {
+                                let val = reader.read_i8()?;
+                                debug!("UTF: Read Int8: {}", val);
+                                CellValue::Int8(val)
+                            }
+                            0x02 => {
+                                let val = reader.read_u16()?;
+                                debug!("UTF: Read UInt16: {}", val);
+                                CellValue::UInt16(val)
+                            }
+                            0x03 => {
+                                let val = reader.read_i16()?;
+                                debug!("UTF: Read Int16: {}", val);
+                                CellValue::Int16(val)
+                            }
+                            0x04 => {
+                                let val = reader.read_u32()?;
+                                debug!("UTF: Read UInt32: {}", val);
+                                CellValue::UInt32(val)
+                            }
+                            0x05 => {
+                                let val = reader.read_i32()?;
+                                debug!("UTF: Read Int32: {}", val);
+                                CellValue::Int32(val)
+                            }
+                            0x06 => {
+                                let val = reader.read_u64()?;
+                                debug!("UTF: Read UInt64: {}", val);
+                                CellValue::UInt64(val)
+                            }
+                            0x07 => {
+                                let val = reader.read_i64()?;
+                                debug!("UTF: Read Int64: {}", val);
+                                CellValue::Int64(val)
+                            }
+                            0x08 => {
+                                let val = reader.read_f32()?;
+                                debug!("UTF: Read Float: {}", val);
+                                CellValue::Float(val)
+                            }
                             0x0A => {
                                 let str_offset = reader.read_u32()?;
                                 debug!("UTF: String offset: {}", str_offset);
@@ -366,7 +434,14 @@ impl Utf {
 
     pub fn get_column_data(&self, row: usize, column_name: &str) -> Option<&CellValue> {
         let col_index = self.columns.iter().position(|c| c.name == column_name)?;
-        self.rows.get(row)?.get(col_index).map(|cell| &cell.value)
+        let cell_value = self.rows.get(row)?.get(col_index).map(|cell| &cell.value)?;
+
+        debug!(
+            "UTF: get_column_data row={}, column='{}', value={:?}",
+            row, column_name, cell_value
+        );
+
+        Some(cell_value)
     }
 
     pub fn get_column_position(&self, row: usize, column_name: &str) -> Option<u64> {
@@ -381,14 +456,23 @@ impl Utf {
         default_type: u8,
     ) -> CellValue {
         match self.get_column_data(row, column_name) {
-            Some(CellValue::None) | None => match default_type {
-                0 => CellValue::UInt8(0xFF),
-                1 => CellValue::UInt16(0xFFFF),
-                2 => CellValue::UInt32(0xFFFFFFFF),
-                3 => CellValue::UInt64(0xFFFFFFFFFFFFFFFF),
-                _ => CellValue::None,
-            },
-            Some(value) => value.clone(),
+            Some(CellValue::None) | None => {
+                debug!(
+                    "UTF: Using default value for column '{}', type {}",
+                    column_name, default_type
+                );
+                match default_type {
+                    0 => CellValue::UInt8(0xFF),
+                    1 => CellValue::UInt16(0xFFFF),
+                    2 => CellValue::UInt32(0xFFFFFFFF),
+                    3 => CellValue::UInt64(0xFFFFFFFFFFFFFFFF),
+                    _ => CellValue::None,
+                }
+            }
+            Some(value) => {
+                debug!("UTF: Found value for column '{}': {:?}", column_name, value);
+                value.clone()
+            }
         }
     }
 }

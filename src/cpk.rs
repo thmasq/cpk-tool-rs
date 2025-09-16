@@ -410,22 +410,53 @@ impl Cpk {
             }
 
             if let Some(file_size) = utf.get_column_data(row_idx as usize, "FileSize") {
+                debug!(
+                    "Raw FileSize value for '{}': {:?}",
+                    entry.file_name, file_size
+                );
                 entry.file_size = file_size.as_u64().unwrap_or(0);
+                debug!(
+                    "Converted FileSize for '{}': {}",
+                    entry.file_name, entry.file_size
+                );
                 entry.file_size_pos = utf
                     .get_column_position(row_idx as usize, "FileSize")
                     .unwrap_or(0);
+            } else {
+                debug!("No FileSize column found for '{}'", entry.file_name);
             }
 
             if let Some(extract_size) = utf.get_column_data(row_idx as usize, "ExtractSize") {
+                debug!(
+                    "Raw ExtractSize value for '{}': {:?}",
+                    entry.file_name, extract_size
+                );
                 entry.extract_size = extract_size.as_u64();
+                debug!(
+                    "Converted ExtractSize for '{}': {:?}",
+                    entry.file_name, entry.extract_size
+                );
                 entry.extract_size_pos = utf.get_column_position(row_idx as usize, "ExtractSize");
+            } else {
+                debug!("No ExtractSize column found for '{}'", entry.file_name);
             }
 
             if let Some(file_offset) = utf.get_column_data(row_idx as usize, "FileOffset") {
-                entry.file_offset = file_offset.as_u64().unwrap_or(0) + add_offset;
+                debug!(
+                    "Raw FileOffset value for '{}': {:?}",
+                    entry.file_name, file_offset
+                );
+                let base_offset = file_offset.as_u64().unwrap_or(0);
+                entry.file_offset = base_offset + add_offset;
+                debug!(
+                    "Converted FileOffset for '{}': 0x{:X} (base: 0x{:X} + add_offset: 0x{:X})",
+                    entry.file_name, entry.file_offset, base_offset, add_offset
+                );
                 entry.file_offset_pos = utf
                     .get_column_position(row_idx as usize, "FileOffset")
                     .unwrap_or(0);
+            } else {
+                debug!("No FileOffset column found for '{}'", entry.file_name);
             }
 
             if let Some(id) = utf.get_column_data(row_idx as usize, "ID") {
@@ -435,6 +466,11 @@ impl Cpk {
             if let Some(user_string) = utf.get_column_data(row_idx as usize, "UserString") {
                 entry.user_string = user_string.as_string().map(|s| s.to_string());
             }
+
+            debug!(
+                "Adding file entry: '{}' (size: {}, offset: 0x{:X})",
+                entry.file_name, entry.file_size, entry.file_offset
+            );
 
             self.file_table.push(entry);
         }
@@ -695,34 +731,71 @@ impl Cpk {
             (None, file_name) => file_name.clone(),
         };
 
+        debug!("Extracting file: {}", output_path);
+        debug!("  Offset: 0x{:X}", entry.file_offset);
+        debug!("  Size: {}", entry.file_size);
+        debug!("  Extract Size: {:?}", entry.extract_size);
+
+        // Check for zero-sized files
+        if entry.file_size == 0 {
+            warn!("File {} has zero size, skipping", output_path);
+            return Ok(());
+        }
+
         // Seek to file position
         reader.seek(SeekFrom::Start(entry.file_offset))?;
 
-        // Check for compression by reading header first
-        let mut header = [0u8; 8];
-        if let Err(_) = reader.read_exact(&mut header) {
-            // If we can't read 8 bytes, the file might be smaller
-            reader.seek(SeekFrom::Start(entry.file_offset))?;
-        } else {
-            // Seek back to beginning of file
-            reader.seek(SeekFrom::Start(entry.file_offset))?;
-        }
-
         // Read the full file data
         let mut data = vec![0u8; entry.file_size as usize];
-        reader.read_exact(&mut data)?;
+        match reader.read_exact(&mut data) {
+            Ok(()) => {
+                debug!("Successfully read {} bytes", data.len());
+            }
+            Err(e) => {
+                return Err(CpkError::Io(e));
+            }
+        }
 
         // Check if file is compressed and decompress if needed
         if data.len() >= 8 && &data[0..8] == b"CRILAYLA" {
-            info!("Decompressing CRILAYLA file: {}", output_path);
+            info!(
+                "Decompressing CRILAYLA file: {} (compressed size: {})",
+                output_path,
+                data.len()
+            );
+
+            // Read the uncompressed size from the header for validation
+            if data.len() >= 16 {
+                let uncompressed_size =
+                    u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+                let header_offset =
+                    u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
+
+                debug!(
+                    "CRILAYLA header: uncompressed_size={}, header_offset={}",
+                    uncompressed_size, header_offset
+                );
+
+                // Validate the header makes sense
+                if header_offset + 0x110 > data.len() {
+                    return Err(CpkError::Compression(format!(
+                        "Invalid CRILAYLA header: header_offset={} + 0x110 > data.len()={}",
+                        header_offset,
+                        data.len()
+                    )));
+                }
+            }
+
             data = decompress_crilayla(&data)?;
+            info!("Decompressed to {} bytes", data.len());
         }
 
-        info!("Extracting: {}", output_path);
+        info!("Extracting: {} ({} bytes)", output_path, data.len());
         std::fs::write(&output_path, &data)?;
 
         Ok(())
     }
+
     pub fn replace_file<P: AsRef<Path>>(
         &mut self,
         _cpk_path: P,
