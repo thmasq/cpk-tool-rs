@@ -756,8 +756,19 @@ impl Cpk {
             }
         }
 
-        // Check if file is compressed and decompress if needed
-        if data.len() >= 8 && &data[0..8] == b"CRILAYLA" {
+        let should_decompress = if let Some(extract_size) = entry.extract_size {
+            let compression_ratio = entry.file_size as f32 / extract_size as f32;
+            debug!(
+                "Compression ratio: {} (file_size: {}, extract_size: {})",
+                compression_ratio, entry.file_size, extract_size
+            );
+            compression_ratio < 1.0
+        } else {
+            // Fallback: check for CRILAYLA signature if no extract_size
+            data.len() >= 8 && &data[0..8] == b"CRILAYLA"
+        };
+
+        if should_decompress && data.len() >= 8 && &data[0..8] == b"CRILAYLA" {
             info!(
                 "Decompressing CRILAYLA file: {} (compressed size: {})",
                 output_path,
@@ -776,6 +787,17 @@ impl Cpk {
                     uncompressed_size, header_offset
                 );
 
+                // Validate against extract_size if available
+                if let Some(extract_size) = entry.extract_size {
+                    if uncompressed_size + 0x100 != extract_size as usize {
+                        warn!(
+                            "CRILAYLA uncompressed size mismatch: header says {}, extract_size is {}",
+                            uncompressed_size + 0x100,
+                            extract_size
+                        );
+                    }
+                }
+
                 // Validate the header makes sense
                 if header_offset + 0x110 > data.len() {
                     return Err(CpkError::Compression(format!(
@@ -788,6 +810,11 @@ impl Cpk {
 
             data = decompress_crilayla(&data)?;
             info!("Decompressed to {} bytes", data.len());
+        } else if should_decompress {
+            warn!(
+                "File {} should be compressed (ratio < 1.0) but doesn't have CRILAYLA signature",
+                output_path
+            );
         }
 
         info!("Extracting: {} ({} bytes)", output_path, data.len());
